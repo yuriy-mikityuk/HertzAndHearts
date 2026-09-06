@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e .
+          python -m pip install -e ".[review]"
           python -m pip install pytest
 
       - name: Install headless Qt runtime libraries
@@ -48,6 +48,8 @@ jobs:
             test/test_update_check.py \
             test/test_meditation.py \
             test/test_meditation_ui.py \
+            test/test_hrv_review.py \
+            test/test_hrv_review_app.py \
             test/test_model_ibi_diagnostics.py \
             test/test_sensor_decode.py \
             test/test_tag_insights.py \
