@@ -377,9 +377,9 @@ class MeditationHistory(QDialog):
         filters.addWidget(self.caffeine)
         filters.addWidget(self.sleep)
         layout.addLayout(filters)
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels([
-            "Started", "Practice", "Before RMSSD", "After RMSSD", "Δ RMSSD",
+            "Started", "Practice", "Before RMSSD", "Practice RMSSD", "After RMSSD", "Δ RMSSD",
             "Δ lnRMSSD", "Sleep / caffeine", "Usable 5-min windows",
         ])
         # Use a current cell, not a native selected-cell collection. Qt/Cocoa
@@ -497,6 +497,7 @@ class MeditationHistory(QDialog):
                 metadata["started_at"][:19].replace("T", " "),
                 diary.get("technique") or "Not recorded",
                 display(metric_value(record, "before.rmssd_ms")),
+                display(metric_value(record, "practice.rmssd_ms")),
                 display(metric_value(record, "after.rmssd_ms")),
                 display(metric_value(record, "delta.rmssd_ms")),
                 display(metric_value(record, "delta.ln_rmssd")),
