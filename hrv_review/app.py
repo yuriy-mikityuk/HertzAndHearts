@@ -43,6 +43,14 @@ def show_metrics(items):
     })
 
 
+def group_label(group):
+    profile, practice, posture, breathing, phase, seconds, period = group
+    period_name = ("ночь", "утро", "день", "вечер")[period]
+    posture_name = {"seated": "сидя", "lying": "лёжа", "standing": "стоя"}.get(posture, posture)
+    return (f"{practice} · {posture_name} · {breathing} · {LABELS.get(phase, phase)} · "
+            f"{seconds / 60:g} мин · {period_name} · {profile}")
+
+
 def rr_figure(recording, draft):
     figure = go.Figure()
     x, y, rejected_x, rejected_y, reasons = [], [], [], [], []
@@ -219,7 +227,7 @@ def run():
             st.info("Нет полных пригодных окон этого этапа с заполненными условиями. "
                     "Показатели коротких этапов доступны на первой вкладке.")
         else:
-            group = st.selectbox("Условия", groups, format_func=lambda g: " / ".join(map(str, g)))
+            group = st.selectbox("Условия", groups, format_func=group_label)
             selected = pd.DataFrame([row for row in rows if row["group"] == group]).drop(columns="group")
             selected["started_at"] = pd.to_datetime(selected["started_at"], utc=True)
             selected = selected.sort_values("started_at")
