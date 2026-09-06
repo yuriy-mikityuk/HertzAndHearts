@@ -396,6 +396,7 @@ class MeditationHistory(QDialog):
             ("Before RMSSD (ms)", "before.rmssd_ms"),
             ("Before lnRMSSD", "before.ln_rmssd"),
             ("Meditation RMSSD (ms)", "practice.rmssd_ms"),
+            ("After RMSSD (ms)", "after.rmssd_ms"),
             ("After − before RMSSD (ms)", "delta.rmssd_ms"),
             ("After − before lnRMSSD", "delta.ln_rmssd"),
             ("Before SDNN (ms)", "before.sdnn_ms"),
