@@ -28,6 +28,15 @@ For full walkthrough:
 For troubleshooting:
 - `docs/troubleshooting.md`
 
+## Meditation workflow in this fork
+
+Use **Meditation…** above the plots for a timed before / practice / after
+protocol and a session diary. **Meditation history** compares fixed five-minute
+RR metrics within matching conditions, with per-session or weekly trends.
+Original RR intervals and correction flags are retained for later reanalysis.
+See [the meditation guide](docs/MEDITATION.md) for setup, quality rules, exports
+and interpretation. For source development, use Python 3.11.
+
 Cardiac theory notes (QRS + HRV compendium, Markdown):
 - `docs/cardiac-compendium.md` (full) · `docs/part-i-qrs-waveform-fundamentals.md` · `docs/part-ii-hrv-autonomic-metrics.md`
 - QRS Word source (local): `docs/cardiac-source/` — figures export to `docs/assets/cardiac-qrs/` for Markdown

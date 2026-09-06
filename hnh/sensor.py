@@ -26,7 +26,6 @@ from PySide6.QtNetwork import (
     QNetworkProxy,
     QTcpSocket,
 )
-from math import ceil
 from typing import Union
 from hnh.utils import get_sensor_address, get_sensor_remote_address
 from hnh.config import COMPATIBLE_SENSORS, DEBUG, PHONE_BRIDGE_PORT_DEFAULT
@@ -380,7 +379,7 @@ class PhoneBridgeClient(QObject):
         if msg_type == "rr":
             rr_ms = payload.get("rr_ms", payload.get("ibi_ms"))
             try:
-                ibi = int(round(float(rr_ms)))
+                ibi = float(rr_ms)
             except Exception:
                 return
             if ibi > 0:
@@ -1525,7 +1524,7 @@ class SensorClient(QObject):
             # ee = (data[first_rr_byte + 1] << 8) | data[first_rr_byte]
             first_rr_byte += 2
 
-        for i in range(first_rr_byte, len(heart_rate_measurement_bytes), 2):
+        for i in range(first_rr_byte, len(heart_rate_measurement_bytes) - 1, 2):
             ibi: int = (
                 heart_rate_measurement_bytes[i + 1] << 8
             ) | heart_rate_measurement_bytes[i]
@@ -1533,5 +1532,5 @@ class SensorClient(QObject):
             # Convert 1/1024 sec format to milliseconds.
             # TODO: move conversion to model and only convert if sensor doesn't
             # transmit data in milliseconds.
-            ibi = ceil(ibi / 1024 * 1000)
+            ibi = ibi / 1024 * 1000
             self.ibi_update.emit(ibi)

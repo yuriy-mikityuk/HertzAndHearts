@@ -1,6 +1,7 @@
 import numpy as np
 import statistics
 import math
+import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import islice
@@ -24,6 +25,9 @@ from hnh.session_artifacts import default_qtc_payload
 
 
 class Model(QObject):
+    # Immutable-by-convention per-beat payload, before buffers/smoothing. Carries
+    # the received RR as well as the live filter result for offline reanalysis.
+    rr_sample = Signal(object)
     ibis_buffer_update = Signal(NamedSignal)
     hrv_update = Signal(NamedSignal)
     addresses_update = Signal(NamedSignal)
@@ -104,10 +108,26 @@ class Model(QObject):
             print(f"!!! ERROR: {e}")
 
 
-    @Slot(int)
+    @Slot(object)
     def update_ibis_buffer(self, ibi: int):
         self.ibi_buffer_updates_count += 1
+        received_perf = time.perf_counter()
+        if not isinstance(ibi, (int, float)) or not math.isfinite(ibi) or ibi <= 0:
+            self.rr_sample.emit({
+                "raw_rr_ms": ibi, "cleaned_rr_ms": None,
+                "correction": "invalid", "received_perf": received_perf,
+            })
+            return
         validated_ibi = self.validate_ibi(ibi)
+        correction = "unchanged"
+        if validated_ibi != ibi:
+            correction = "out_of_range_replaced"
+        elif not MIN_IBI <= ibi <= MAX_IBI:
+            correction = "out_of_range_unfiltered"
+        self.rr_sample.emit({
+            "raw_rr_ms": ibi, "cleaned_rr_ms": validated_ibi,
+            "correction": correction, "received_perf": received_perf,
+        })
         self.update_ibis_seconds(validated_ibi / 1000)
         self.ibis_buffer.append(validated_ibi)
 

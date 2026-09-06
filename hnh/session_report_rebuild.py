@@ -8,6 +8,7 @@ from typing import Any
 
 from hnh.report import generate_session_report, generate_session_share_pdf
 from hnh.session_artifacts import default_qtc_payload
+from hnh.csv_timing import elapsed_milliseconds
 
 
 def _to_float(value: Any) -> float | None:
@@ -100,13 +101,12 @@ def _load_series_from_csv(csv_path: Path) -> dict[str, Any]:
         for row in reader:
             event = str(row.get("event") or "").strip()
             value_raw = row.get("value")
-            elapsed_raw = row.get("elapsed_sec")
             ts = _parse_iso_datetime(row.get("timestamp"))
             if ts is not None:
                 first_ts = ts if first_ts is None else min(first_ts, ts)
                 last_ts = ts if last_ts is None else max(last_ts, ts)
 
-            parsed_elapsed = _to_float(elapsed_raw)
+            parsed_elapsed = elapsed_milliseconds(row)
             if parsed_elapsed is not None:
                 current_elapsed_ms = max(current_elapsed_ms, parsed_elapsed)
 
@@ -202,10 +202,11 @@ def build_report_data_from_session_dir(
         if settle is not None:
             settling_duration = int(settle)
 
+    is_meditation = bool((manifest.get("meditation") or {}).get("protocol"))
     return {
         "session_id": str(manifest.get("session_id") or session_dir.name),
         "profile_id": profile_id,
-        "session_type": "General Monitoring",
+        "session_type": "Meditation · live biofeedback summary" if is_meditation else "General Monitoring",
         "session_start": started_at,
         "session_end": ended_at,
         "baseline_hr": baseline_hr,
@@ -224,7 +225,10 @@ def build_report_data_from_session_dir(
         "ecg_samples": [],
         "ecg_sample_rate_hz": 130,
         "ecg_is_simulated": False,
-        "notes": "",
+        "notes": (
+            "For the five-minute before / meditation / after comparison, open Meditation history. "
+            "This document summarizes live biofeedback values."
+        ) if is_meditation else "",
         "csv_path": str(csv_path),
         "report_stage": report_stage,
         "qtc": qtc_payload,

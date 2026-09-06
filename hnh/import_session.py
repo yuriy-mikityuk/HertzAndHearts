@@ -165,10 +165,10 @@ def _parse_rr_only(path: Path) -> dict[str, Any] | None:
 
 def write_session_csv(csv_path: Path, data: dict[str, Any]) -> None:
     """Write normalized replay data to our session.csv format.
-    The elapsed_sec column stores cumulative ms (same convention as logger)."""
+    The elapsed_ms column stores cumulative milliseconds."""
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["event", "value", "timestamp", "elapsed_sec"])
+        w.writerow(["event", "value", "timestamp", "elapsed_ms"])
         base_ts = datetime.now().isoformat()
         hr_times = data.get("hr_times") or []
         hr_values = data.get("hr_values") or []

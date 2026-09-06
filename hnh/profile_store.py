@@ -1575,8 +1575,30 @@ class ProfileStore:
         return self.purge_sessions_by_state("abandoned", profile_name=profile_name)
 
     def purge_recording_sessions(self, profile_name: str | None = None) -> dict[str, int]:
-        """Delete stale recording sessions from DB and remove their session folders."""
-        return self.purge_sessions_by_state("recording", profile_name=profile_name)
+        """Preserve original RR recordings after a crash; retain legacy cleanup."""
+        from hnh.meditation import recover_interrupted_recording, write_json
+
+        preserved = 0
+        for row in self.list_sessions(profile_name, state="recording", include_hidden=True, limit=100000):
+            directory = Path(row["session_dir"])
+            if not (directory / "rr_intervals.csv").exists():
+                continue
+            # Preserve even if metadata is damaged. The raw stream is still
+            # useful for manual recovery and must not enter the deletion path.
+            self.record_session_finished(row["session_id"], "abandoned")
+            preserved += 1
+            try:
+                recover_interrupted_recording(directory)
+                manifest_path = directory / "session_manifest.json"
+                if manifest_path.exists():
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["state"] = "abandoned"
+                    write_json(manifest_path, manifest)
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+        result = self.purge_sessions_by_state("recording", profile_name=profile_name)
+        result["preserved_rr_sessions"] = preserved
+        return result
 
     def purge_sessions_by_state(
         self,

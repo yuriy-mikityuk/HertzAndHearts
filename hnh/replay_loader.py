@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 from typing import Any
+from hnh.csv_timing import elapsed_milliseconds
 
 
 def load_session_replay_data(session_dir: Path) -> dict[str, Any]:
@@ -134,13 +135,7 @@ def _load_from_csv(csv_path: Path) -> dict[str, Any]:
         for row in reader:
             event = (row.get("event") or "").strip()
             value_str = (row.get("value") or "").strip()
-            elapsed_str = (row.get("elapsed_sec") or "").strip()
-            parsed_elapsed = None
-            if elapsed_str:
-                try:
-                    parsed_elapsed = float(elapsed_str)
-                except ValueError:
-                    parsed_elapsed = None
+            parsed_elapsed = elapsed_milliseconds(row)
             if parsed_elapsed is not None:
                 # Old files can have backwards elapsed values; clamp monotonic
                 # to avoid replay zig-zag artifacts.

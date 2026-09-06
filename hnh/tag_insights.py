@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from hnh.profile_store import ProfileStore
+from hnh.csv_timing import elapsed_milliseconds
 
 # Window design for event-linked delta computation:
 # compare stable pre-event window against post-event window.
@@ -255,8 +256,7 @@ def _parse_session_csv(csv_path: Path) -> dict[str, list[tuple[float, float]] | 
         for row in reader:
             event = str(row.get("event") or "").strip()
             value_raw = str(row.get("value") or "").strip()
-            elapsed_raw = str(row.get("elapsed_sec") or "").strip()
-            elapsed_ms = _parse_float(elapsed_raw)
+            elapsed_ms = elapsed_milliseconds(row)
             if elapsed_ms is not None:
                 current_elapsed_ms = elapsed_ms
             t_sec = current_elapsed_ms / 1000.0
