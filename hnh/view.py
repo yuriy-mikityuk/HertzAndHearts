@@ -90,6 +90,7 @@ from hnh.data_paths import app_data_root
 from hnh.session_report_rebuild import generate_reports_for_session_dir
 from hnh import __version__ as version, resources  # noqa
 from hnh import update_check
+from hnh.meditation_ui import MeditationPanel
 import warnings
 
 try:
@@ -6541,6 +6542,7 @@ class View(QMainWindow):
         self._last_qtc_diag_logged: tuple = ()  # (method, qrs_source) for DEBUG throttle
         self._session_state = "idle"
         self._session_bundle: SessionBundle | None = None
+        self.meditation_panel = None
         self._disclaimer_acknowledged_at: str | None = None
         self._disclaimer_ack_mode = "not_recorded"
         self._session_root = app_data_root()
@@ -6643,7 +6645,7 @@ class View(QMainWindow):
         self.signals.annotation.connect(self.logger.write_to_file)
         self.logger.recording_status.connect(self.show_recording_status)
         self.logger.status_update.connect(self.show_status)
-        self.model.ibis_buffer_update.connect(self.logger.write_to_file)
+        self.model.rr_sample.connect(self.logger.write_rr_sample)
         self.model.hrv_update.connect(self.logger.write_to_file)
         self.model.stress_ratio_update.connect(self.logger.write_to_file)
 
@@ -7089,6 +7091,8 @@ class View(QMainWindow):
         self._top_bar = QWidget()
         self._top_bar.setLayout(header_row)
         self.vlayout0.addWidget(self._top_bar)
+        self.meditation_panel = MeditationPanel(self)
+        self.vlayout0.addWidget(self.meditation_panel)
         for _w in (
             self._top_bar,
             self.profile_zone,
@@ -8437,10 +8441,12 @@ class View(QMainWindow):
                         break
             except Exception:
                 tag_associations = []
+        panel = getattr(self, "meditation_panel", None)
+        is_meditation = bool(panel and panel.recording and panel.recording.metadata.get("protocol"))
         return {
             "session_id": self._session_bundle.session_id if self._session_bundle else "--",
             "profile_id": self._session_profile_id,
-            "session_type": "General Monitoring",
+            "session_type": "Meditation · live biofeedback summary" if is_meditation else "General Monitoring",
             "session_start": session_start,
             "session_end": session_end,
             "baseline_hr": self.baseline_hr,
@@ -8461,7 +8467,10 @@ class View(QMainWindow):
             "ecg_samples": ecg_samples,
             "ecg_sample_rate_hz": ECG_SAMPLE_RATE,
             "ecg_is_simulated": False,
-            "notes": "",
+            "notes": (
+                "For the five-minute before / meditation / after comparison, open Meditation history. "
+                "This document summarizes live biofeedback values."
+            ) if is_meditation else "",
             "csv_path": csv_path,
             "report_stage": report_stage,
             "qtc": qtc_payload,
@@ -8575,6 +8584,18 @@ class View(QMainWindow):
         if self._session_bundle is None:
             return
         payload = self._manifest_payload(state=state, report_stage=report_stage)
+        panel = getattr(self, "meditation_panel", None)
+        if panel is not None and panel.recording is not None:
+            record = panel.recording
+            if record.directory == self._session_bundle.session_dir:
+                payload["meditation"] = {
+                    "metadata": "meditation.json",
+                    "original_rr": "rr_intervals.csv",
+                    "analysis": "meditation_analysis.json",
+                    "windows": "meditation_windows.csv",
+                    "protocol": record.metadata.get("protocol"),
+                    "capture_error": panel._capture_error,
+                }
         try:
             write_manifest(self._session_bundle.manifest_path, payload)
         except OSError as exc:
@@ -8622,6 +8643,9 @@ class View(QMainWindow):
         except Exception as exc:
             self.show_status(f"Unable to create session folder: {exc}")
             return
+        panel = getattr(self, "meditation_panel", None)
+        if panel is not None and not panel.begin(self._session_bundle):
+            return
         self._session_annotations = []
         self._session_hr_values = []
         self._session_hr_times = []
@@ -8663,6 +8687,8 @@ class View(QMainWindow):
         if self._session_state != "recording":
             return
         self._record_disconnect_end()  # Close any open interval before abandoning
+        if self.meditation_panel is not None:
+            self.meditation_panel.finish("abandoned")
         self.signals.save_recording.emit()
         if self._session_bundle is not None:
             self._record_session_trend_from_current_state()
@@ -8683,6 +8709,8 @@ class View(QMainWindow):
                 self.show_status("No active session to save.")
             return
         self._record_disconnect_end()  # Close any open disconnect interval for manifest
+        if self.meditation_panel is not None:
+            self.meditation_panel.finish("finalized")
         destination_root = self._session_save_path_from_settings()
         self.signals.save_recording.emit()
         if build_final_report and self._session_bundle is not None:
@@ -11527,6 +11555,8 @@ class View(QMainWindow):
             return  # already recording
         self._current_disconnect_start = time.time()
         self._disconnect_reason = reason
+        if self.meditation_panel is not None:
+            self.meditation_panel.gap()
 
     def _record_disconnect_end(self):
         """Complete current disconnect interval, emit annotation, add to manifest data."""

@@ -28,9 +28,42 @@ class LoggerTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0]["event"], "IBI")
             self.assertEqual(rows[1]["event"], "hrv")
-            self.assertNotEqual(rows[0]["elapsed_sec"], "")
-            self.assertNotEqual(rows[1]["elapsed_sec"], "")
-            self.assertGreater(float(rows[1]["elapsed_sec"]), float(rows[0]["elapsed_sec"]))
+            self.assertEqual(float(rows[0]["elapsed_ms"]), 500.0)
+            self.assertEqual(float(rows[1]["elapsed_ms"]), 1000.0)
+
+    def test_annotations_with_commas_quotes_and_newlines_round_trip(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.csv"
+            logger = Logger()
+            logger.start_recording(str(path))
+            text = 'Relaxed, "eyes closed"\nsecond line'
+            logger.write_to_file(NamedSignal("Annotation", text))
+            logger.save_recording()
+            with path.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["value"], text)
+
+    def test_existing_recording_is_never_appended_or_overwritten(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.csv"
+            path.write_text("original")
+            logger = Logger()
+            logger.start_recording(str(path))
+            self.assertIsNone(logger.file)
+            self.assertEqual(path.read_text(), "original")
+
+    def test_per_beat_payload_preserves_batched_rr_values(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.csv"
+            logger = Logger()
+            logger.start_recording(str(path))
+            logger.write_rr_sample({"cleaned_rr_ms": 999.0234375})
+            logger.write_rr_sample({"cleaned_rr_ms": 1000.9765625})
+            logger.write_rr_sample({"cleaned_rr_ms": None})
+            logger.save_recording()
+            with path.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([float(row["value"]) for row in rows], [999.0234375, 1000.9765625])
 
 
 if __name__ == "__main__":

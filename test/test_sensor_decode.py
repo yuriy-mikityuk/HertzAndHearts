@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from PySide6.QtCore import QByteArray
 
@@ -26,6 +27,14 @@ def _legacy_decode(raw_payload: bytes) -> list[float]:
 
 
 class SensorDecodeTests(unittest.TestCase):
+    def test_rr_packet_retains_fractional_milliseconds_and_multiple_beats(self):
+        client = SensorClient()
+        values = []
+        client.ibi_update.connect(values.append)
+        with patch.object(client, "_sensor_address", return_value="test"):
+            client._data_handler(None, QByteArray(bytes([0x10, 60, 0xFF, 3, 1, 4, 0xFF])))
+        self.assertEqual(values, [999.0234375, 1000.9765625])
+
     def test_decode_matches_legacy_for_boundaries_and_truncated_tail(self):
         values = [0, 1, -1, 123456, -654321, 0x7FFFFF, -0x800000]
         payload = b"".join(_pack_signed_24(v) for v in values) + b"\xAA\xBB"
