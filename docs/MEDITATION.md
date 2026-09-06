@@ -10,14 +10,16 @@ does not contain this workflow.
    does not, use **Start New**. Original RR capture starts with that recording.
 2. Settle into your usual posture. Open **Meditation…**, enter the practice,
    posture and breathing mode, and any optional diary information.
-3. Choose the practice duration (default 15 minutes) and press **Begin baseline**.
-   The protocol is **5 minutes before → practice → 5 minutes after**. Data from
+3. Choose a saved template (default **5/16/5 coherence**) and click
+   **Применить шаблон**, or set the three durations individually, then press
+   **Begin baseline**. Data from
    before you pressed this button remain recorded but are outside the protocol.
 4. **Automatic transitions and stop** advances at the planned boundaries and
-   saves the recording at the end. Optional **Sound at transitions** gives a
-   system sound at each change. Turn automatic transitions off to advance using
+   saves the recording at the end. Choose **Голосовые сообщения**, tones or
+   silence; use **Проверить звук** before starting. Turn automatic transitions off to advance using
    **Next phase**; the after phase ends with **Finish & save**.
-5. Use **Meditation…** again after saving to enter after-session ratings.
+5. Use **Meditation…** again after saving to enter after-session ratings,
+   or complete the separate diary in HRV Review.
    Disconnect the sensor before removing the strap.
 
 You can always stop early using **Stop & Save**. The recording is retained;
@@ -143,3 +145,28 @@ Run `QT_QPA_PLATFORM=offscreen python -m pytest -q test/`.
 Tests use synthetic data and temporary recording directories; no sensor is
 required. A real full meditation protocol should still be checked with the H10
 before relying on the workflow for a long-term series.
+
+## Templates and voice notifications
+
+The recorder reads versioned JSON templates from
+`~/.local/share/hrv-review/practice-templates/` (override the review folder with
+`HRV_REVIEW_STORE`). HRV Review owns the template editor; no Python dependency
+between the applications is required. Built-in 5/16/5 coherence and 5/15/5 breath
+attention templates remain available if no custom files exist. Reload templates
+in the dialog after saving changes in HRV Review.
+
+Each recording stores its selected template revision and actual durations.
+Changing templates does not copy sleep, caffeine or personal ratings. All three
+phases allow 1–120 whole minutes; existing fixed-window analysis still treats
+short windows separately.
+
+Voice messages identify baseline start, practice start, natural-breathing after
+phase, completion and early stop. Automatic and manual transitions are covered.
+A delayed timer announces the current phase rather than queuing obsolete phase
+messages. Repeated timer refreshes do not repeat announcements.
+
+On macOS speech uses `/usr/bin/say` with the local Milena voice; generated tones
+use `afplay`. Other platforms use an available `espeak` engine or a system beep.
+Unavailable speech falls back with a status message. Audio is asynchronous and
+does not block RR recording. Keep the application running and test the system
+output/volume before a session; browser visibility is unrelated to these cues.

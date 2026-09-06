@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
+import os
 
 import pyqtgraph as pg
 from PySide6.QtCore import QItemSelectionModel, QTimer, QUrl, Slot
@@ -19,6 +20,8 @@ from hnh.meditation import (
     RRRecording, analyze_session, load_history, metric_value, number,
     trend_points, write_json,
 )
+from hnh.practice_templates import load_templates
+from hnh.session_audio import SessionAudio
 
 PHASE_LABELS = {"before": "Before", "practice": "Meditation", "after": "After"}
 
@@ -53,6 +56,9 @@ class DiaryForm(QWidget):
         layout = QFormLayout(self)
         self.technique = QLineEdit(data.get("technique", ""))
         self.technique.setPlaceholderText("e.g. breath attention, body scan")
+        self.category = choice([("Other practice", "other"), ("Breathing exercise", "breathing"),
+                                ("Attention meditation", "attention")])
+        self.category.setCurrentIndex(max(0, self.category.findData(data.get("category", "other"))))
         self.posture = choice([
             ("Not recorded", ""), ("Seated", "seated"), ("Lying down", "lying"),
             ("Standing", "standing"), ("Other", "other"),
@@ -77,6 +83,7 @@ class DiaryForm(QWidget):
             if value is not None:
                 widget.setValue(value if isinstance(widget, QDoubleSpinBox) else int(value))
         layout.addRow("Practice", self.technique)
+        layout.addRow("Practice type", self.category)
         layout.addRow("Posture", self.posture)
         layout.addRow("Breathing during practice", self.breathing)
         layout.addRow("Paced breathing rate", self.rate)
@@ -121,6 +128,7 @@ class DiaryForm(QWidget):
             return widget.value() if widget.value() >= 0 else None
         return {
             "technique": self.technique.text().strip(),
+            "category": self.category.currentData(),
             "posture": self.posture.currentData(),
             "breathing": self.breathing.currentData(),
             "breathing_rate": value(self.rate) if self.breathing.currentData() == "paced" else None,
@@ -147,6 +155,10 @@ class MeditationPanel(QWidget):
         self.draft = {}
         self._draft_profile = host._session_profile_id
         self.cues = False
+        self.audio = SessionAudio(self, status=host.show_status)
+        self._audio_token = None
+        self.draft_template = None
+        self.draft_plan = None
         self._capture_error = None
         self._history_dialog = None
         row = QHBoxLayout(self)
@@ -173,6 +185,8 @@ class MeditationPanel(QWidget):
 
     def begin(self, bundle):
         self._capture_error = None
+        self.audio.stop()
+        self._audio_token = None
         try:
             self.recording = RRRecording(bundle.session_dir, bundle.session_id)
             self.recording.metadata["profile_id"] = self.host._session_profile_id
@@ -208,17 +222,24 @@ class MeditationPanel(QWidget):
         if self.recording is not None and self.recording.active:
             try:
                 self.recording.finish("capture_error" if self._capture_error else state)
+                if not self._capture_error and self.recording.metadata.get("protocol"):
+                    self._announce(self.recording, "completed" if self.recording.metadata.get("protocol_completed") else "stopped")
             except (OSError, ValueError) as exc:
                 self._capture_error = str(exc)
                 self.host.show_status(f"Meditation analysis could not be saved: {exc}")
         self.refresh()
+
+    def _announce(self, record, event):
+        token = (id(record), event)
+        if token != self._audio_token:
+            self._audio_token = token
+            self.audio.play(event, (record.metadata.get("protocol") or {}).get("audio_mode", "off"))
 
     def refresh(self):
         record = self.recording
         same_profile = record and record.metadata.get("profile_id") == self.host._session_profile_id
         phase = record.phase if same_profile else None
         if record and record.active:
-            previous = phase["name"] if phase else None
             try:
                 done = record.tick()
             except OSError as exc:
@@ -226,11 +247,11 @@ class MeditationPanel(QWidget):
                 self.host.finalize_session(show_message=False, build_final_report=False)
                 return
             phase = record.phase
-            if self.cues and previous and (done or phase["name"] != previous):
-                QApplication.beep()
             if done:
                 self.host.finalize_session(show_message=False, build_final_report=False)
                 return
+            if same_profile and phase:
+                self._announce(record, phase["name"])
         active = bool(same_profile and record.active)
         self.next_button.setEnabled(active and phase is not None)
         self.history_button.setEnabled(not active)
@@ -268,6 +289,8 @@ class MeditationPanel(QWidget):
         if self._draft_profile != self.host._session_profile_id:
             self.draft = {}
             self.cues = False
+            self.draft_template = None
+            self.draft_plan = None
             self._draft_profile = self.host._session_profile_id
         record = self.recording
         if record and record.metadata.get("profile_id") != self.host._session_profile_id:
@@ -278,29 +301,92 @@ class MeditationPanel(QWidget):
         dialog.resize(590, 720)
         layout = QVBoxLayout(dialog)
         intro = QLabel(
-            "5 minutes before → meditation → 5 minutes after\n"
+            "Before → practice → after. Choose a saved practice template or set the durations.\n"
             "Begin after settling into your usual posture. Early/poor-quality "
             "windows are shown but excluded from comparisons."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
         form = DiaryForm(record.metadata["diary"] if has_protocol else self.draft)
+        template_row = QHBoxLayout()
+        template_combo = QComboBox()
+        template_apply = QPushButton("Применить шаблон")
+        template_reload = QPushButton("Обновить шаблоны")
+        template_notice = QLabel()
+        template_notice.setWordWrap(True)
+        template_row.addWidget(template_combo, 1)
+        template_row.addWidget(template_apply)
+        template_row.addWidget(template_reload)
+        layout.addLayout(template_row)
+        layout.addWidget(template_notice)
         layout.addWidget(scroll_form(form), 1)
         plan = QHBoxLayout()
-        minutes = QSpinBox()
-        minutes.setRange(5, 120)
-        minutes.setValue(int(record.metadata["protocol"]["practice_seconds"] / 60) if has_protocol else 15)
-        minutes.setSuffix(" min meditation")
-        minutes.setEnabled(not has_protocol)
+        durations = {}
+        for name, suffix, default in (("before", " мин до", 5), ("practice", " мин практика", 16), ("after", " мин после", 5)):
+            field = QSpinBox()
+            field.setRange(1, 120)
+            field.setValue(int(record.metadata["protocol"][name + "_seconds"] / 60) if has_protocol
+                           else (self.draft_plan or {}).get(name, default))
+            field.setSuffix(suffix)
+            field.setEnabled(not has_protocol)
+            durations[name] = field
+            plan.addWidget(field)
         automatic = QCheckBox("Automatic transitions and stop")
         automatic.setChecked(record.metadata["protocol"]["automatic"] if has_protocol else True)
         automatic.setEnabled(not has_protocol)
-        cues = QCheckBox("Sound at transitions")
-        cues.setChecked(self.cues)
-        plan.addWidget(minutes)
-        plan.addWidget(automatic)
         layout.addLayout(plan)
-        layout.addWidget(cues)
+        layout.addWidget(automatic)
+        sound_row = QHBoxLayout()
+        audio_mode = choice([("Голосовые сообщения", "voice"), ("Звуковые сигналы", "tone"), ("Без звука", "off")])
+        if has_protocol:
+            audio_mode.setCurrentIndex(max(0, audio_mode.findData(record.metadata["protocol"].get("audio_mode", "off"))))
+        elif self.draft_plan:
+            audio_mode.setCurrentIndex(max(0, audio_mode.findData(self.draft_plan["audio_mode"])))
+            automatic.setChecked(self.draft_plan["automatic"])
+        sound_test = QPushButton("Проверить звук")
+        sound_test.clicked.connect(lambda: self.audio.play("test", audio_mode.currentData()))
+        sound_test.setEnabled(audio_mode.currentData() != "off")
+        audio_mode.currentIndexChanged.connect(lambda: sound_test.setEnabled(audio_mode.currentData() != "off"))
+        audio_mode.currentIndexChanged.connect(lambda: self.audio.stop() if audio_mode.currentData() == "off" else None)
+        sound_row.addWidget(audio_mode)
+        sound_row.addWidget(sound_test)
+        layout.addLayout(sound_row)
+
+        def reload_templates():
+            selected = (template_combo.currentData() or {}).get("id")
+            store = Path(os.environ.get("HRV_REVIEW_STORE", Path.home() / ".local/share/hrv-review"))
+            items, errors = load_templates(store)
+            template_combo.clear()
+            template_combo.addItem("Без шаблона", None)
+            for item in items:
+                template_combo.addItem(item["name"], item)
+                if item["id"] == (selected or (self.draft_template or {}).get("id") or ("coherence" if not self.draft else "")):
+                    template_combo.setCurrentIndex(template_combo.count() - 1)
+            template_notice.setText("; ".join(errors) if errors else "Шаблоны сохраняются в HRV Review → Шаблоны практик.")
+
+        def apply_template():
+            item = template_combo.currentData()
+            if not item or has_protocol:
+                self.draft_template = None if not has_protocol else self.draft_template
+                return
+            self.draft_template = dict(item)
+            for name, field in durations.items():
+                field.setValue(item[name + "_minutes"])
+            form.technique.setText(item["technique"])
+            for field, name in ((form.category, "category"), (form.posture, "posture"), (form.breathing, "breathing")):
+                field.setCurrentIndex(max(0, field.findData(item.get(name))))
+            form.rate.setValue(item.get("breathing_rate") or -1)
+            if not form.notes.toPlainText().strip():
+                form.notes.setPlainText(item.get("description", ""))
+            audio_mode.setCurrentIndex(max(0, audio_mode.findData(item["audio_mode"])))
+            automatic.setChecked(item["automatic"])
+        template_reload.clicked.connect(reload_templates)
+        template_apply.clicked.connect(apply_template)
+        reload_templates()
+        for widget in (template_combo, template_apply, template_reload):
+            widget.setEnabled(not has_protocol)
+        if not has_protocol and not self.draft:
+            apply_template()
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         action = buttons.addButton(
             "Save diary" if has_protocol else "Begin baseline",
@@ -318,12 +404,15 @@ class MeditationPanel(QWidget):
             try:
                 if has_protocol:
                     record.metadata["diary"] = values
+                    record.metadata["protocol"]["audio_mode"] = audio_mode.currentData()
                     record.persist()
                     if not record.active:
                         analyze_session(record.directory)
                 else:
-                    record.begin_protocol(minutes.value(), automatic.isChecked(), values)
-                self.cues = cues.isChecked()
+                    record.begin_protocol(durations["practice"].value(), automatic.isChecked(), values,
+                        before_minutes=durations["before"].value(), after_minutes=durations["after"].value(),
+                        audio_mode=audio_mode.currentData(), template=self.draft_template)
+                self.cues = audio_mode.currentData() != "off"
                 self.draft = {}
                 dialog.accept()
                 self.refresh()
@@ -335,6 +424,8 @@ class MeditationPanel(QWidget):
         dialog.exec()
         if not has_protocol and (not record or not record.metadata.get("protocol")):
             self.draft = form.values()
+            self.draft_plan = {name: field.value() for name, field in durations.items()}
+            self.draft_plan.update(audio_mode=audio_mode.currentData(), automatic=automatic.isChecked())
 
     def open_history(self):
         # Keep the dialog alive across opens. A nested exec() loop and transient

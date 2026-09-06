@@ -48,6 +48,7 @@ jobs:
             test/test_update_check.py \
             test/test_meditation.py \
             test/test_meditation_ui.py \
+            test/test_session_audio.py \
             test/test_model_ibi_diagnostics.py \
             test/test_sensor_decode.py \
             test/test_tag_insights.py \

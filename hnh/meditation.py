@@ -129,18 +129,26 @@ class RRRecording:
             self.segment += 1
             self._in_gap = True
 
-    def begin_protocol(self, practice_minutes: int, automatic: bool, diary: dict):
+    def begin_protocol(self, practice_minutes: int, automatic: bool, diary: dict, *,
+                       before_minutes=5, after_minutes=5, audio_mode="off", template=None):
         if not self.active or self.metadata["protocol"] is not None:
             raise ValueError("A protocol can only begin once in an active recording.")
-        if not 5 <= practice_minutes <= 120:
-            raise ValueError("Practice duration must be between 5 and 120 minutes.")
+        if any(type(value) is not int or not 1 <= value <= 120
+               for value in (before_minutes, practice_minutes, after_minutes)):
+            raise ValueError("Phase durations must be whole minutes between 1 and 120.")
+        if audio_mode not in {"off", "tone", "voice"}:
+            raise ValueError("Unknown audio mode.")
         self.metadata["protocol"] = {
-            "before_seconds": WINDOW_SECONDS,
+            "before_seconds": before_minutes * 60,
             "practice_seconds": practice_minutes * 60,
-            "after_seconds": WINDOW_SECONDS,
+            "after_seconds": after_minutes * 60,
             "automatic": bool(automatic),
+            "audio_mode": audio_mode,
         }
         self.metadata["diary"] = dict(diary)
+        if template is not None:
+            # Capture the selected version: later template edits cannot rewrite this session.
+            self.metadata["practice_template"] = json.loads(json.dumps(template))
         self.metadata["phases"] = [
             {"name": "before", "start_sec": self.elapsed, "end_sec": None}
         ]
