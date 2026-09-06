@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtCore import QTimer, QUrl, Slot
+from PySide6.QtCore import QItemSelectionModel, QTimer, QUrl, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
@@ -148,6 +148,7 @@ class MeditationPanel(QWidget):
         self._draft_profile = host._session_profile_id
         self.cues = False
         self._capture_error = None
+        self._history_dialog = None
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 2, 4, 2)
         self.diary_button = QPushButton("Meditation…")
@@ -336,10 +337,17 @@ class MeditationPanel(QWidget):
             self.draft = form.values()
 
     def open_history(self):
-        dialog = MeditationHistory(
-            self.host._profile_store, self.host._session_profile_id, parent=self
-        )
-        dialog.exec()
+        # Keep the dialog alive across opens. A nested exec() loop and transient
+        # accessible table children are fragile under macOS AX traversal.
+        if self._history_dialog is None:
+            self._history_dialog = MeditationHistory(
+                self.host._profile_store, self.host._session_profile_id, parent=self
+            )
+        else:
+            self._history_dialog.profile = self.host._session_profile_id
+            self._history_dialog.setWindowTitle(f"Meditation history · {self.host._session_profile_id}")
+            self._history_dialog.reload()
+        self._history_dialog.open()
 
 
 class MeditationHistory(QDialog):
@@ -374,8 +382,11 @@ class MeditationHistory(QDialog):
             "Started", "Practice", "Before RMSSD", "After RMSSD", "Δ RMSSD",
             "Δ lnRMSSD", "Sleep / caffeine", "Usable 5-min windows",
         ])
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        # Use a current cell, not a native selected-cell collection. Qt/Cocoa
+        # can dereference stale cell interfaces in accessibilitySelectedChildren
+        # while an accessibility client enumerates a selected table row.
+        self.table.setSelectionMode(QTableWidget.NoSelection)
+        self.table.setToolTip("Click a row or use the arrow keys to choose the session shown below.")
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -420,7 +431,7 @@ class MeditationHistory(QDialog):
             widget.currentIndexChanged.connect(self.apply_filters)
         self.sleep.valueChanged.connect(self.apply_filters)
         self.weekly.toggled.connect(self.apply_filters)
-        self.table.itemSelectionChanged.connect(self.show_details)
+        self.table.currentCellChanged.connect(lambda *_: self.show_details())
         self.reload()
 
     def reload(self):
@@ -503,7 +514,7 @@ class MeditationHistory(QDialog):
             else "Choose a comparison group; different conditions are not pooled"
         )
         if records:
-            self.table.selectRow(0)
+            self.table.setCurrentCell(0, 0, QItemSelectionModel.NoUpdate)
             self.show_details()
         else:
             self.details.setPlainText("No sessions match these filters.")

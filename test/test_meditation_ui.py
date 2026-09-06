@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import csv
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QItemSelectionModel, QObject, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtTest import QTest
 
@@ -90,6 +90,11 @@ def test_history_filters_and_shows_only_matching_trend(qapp, tmp_path):
     qapp.processEvents()
     assert not dialog.grab().isNull()
     assert dialog.table.rowCount() == 2
+    assert dialog.selected() is not None
+    assert dialog.table.selectionModel().selectedIndexes() == []
+    dialog.table.setCurrentCell(1, 0, QItemSelectionModel.NoUpdate)
+    assert dialog.selected() is dialog.visible_records[1]
+    assert dialog.table.selectionModel().selectedIndexes() == []
     assert not dialog.plot.listDataItems()
     dialog.group.setCurrentIndex(1)
     assert dialog.table.rowCount() == 1
@@ -99,6 +104,25 @@ def test_history_filters_and_shows_only_matching_trend(qapp, tmp_path):
     assert dialog.table.rowCount() == 0
     assert not dialog.plot.listDataItems()
     dialog.close()
+
+
+def test_history_open_is_async_and_reuses_owned_dialog(qapp, tmp_path):
+    recording = make_session(tmp_path / "history")
+    host = Host()
+    host._profile_store = SimpleNamespace(list_sessions=lambda *args, **kwargs: [
+        {"state": "finalized", "session_dir": str(recording.directory)}
+    ])
+    host.panel.open_history()
+    dialog = host.panel._history_dialog
+    assert dialog.isVisible()
+    assert dialog.parent() is host.panel
+    assert dialog.table.selectionModel().selectedIndexes() == []
+    dialog.close()
+    host.panel.open_history()
+    assert host.panel._history_dialog is dialog
+    assert dialog.isVisible()
+    dialog.close()
+    host.close()
 
 
 def test_new_profile_cannot_edit_previous_profiles_diary(qapp, tmp_path):
