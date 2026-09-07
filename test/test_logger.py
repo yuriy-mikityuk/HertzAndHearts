@@ -11,6 +11,25 @@ from hnh.utils import NamedSignal
 
 
 class LoggerTests(unittest.TestCase):
+    def test_pause_skips_live_metrics_but_stop_still_saves(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.csv"
+            logger = Logger()
+            logger.start_recording(str(path))
+            logger.write_rr_sample({"cleaned_rr_ms": 900})
+            logger.set_paused(True)
+            logger.write_rr_sample({"cleaned_rr_ms": 1500})
+            logger.set_paused(False)
+            logger.write_rr_sample({"cleaned_rr_ms": 1000})
+            logger.set_paused(True)
+            logger.save_recording()
+            with path.open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([r["value"] for r in rows if r["event"] == "IBI"], ["900", "1000"])
+            self.assertEqual([r["event"] for r in rows],
+                             ["IBI", "SessionPause", "SessionResume", "IBI", "SessionPause"])
+            self.assertIsNone(logger.file)
+
     def test_logger_writes_elapsed_for_all_events(self):
         with TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "session.csv"

@@ -30,6 +30,7 @@ class Host(QWidget):
         self.statuses = []
         self.finalizations = 0
         self.panel = MeditationPanel(self)
+        self.panel.audio.play = lambda *args: None
 
     def show_status(self, text):
         self.statuses.append(text)
@@ -139,12 +140,14 @@ def test_real_view_starts_captures_and_finalizes_sidecars(qapp, tmp_path, monkey
     from hnh import settings
     from hnh.model import Model
     from hnh.view import View
+    from hnh.session_audio import SessionAudio
 
     monkeypatch.setenv("HNH_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(View, "_run_startup_flow", lambda self: None)
     monkeypatch.setattr(View, "_schedule_background_update_check", lambda self: None)
     monkeypatch.setattr(View, "_show_maximized_fit", lambda self: None)
+    monkeypatch.setattr(SessionAudio, "play", lambda *args: None)
     model = Model()
     view = View(model)
     view.settings.OPEN_SESSION_FOLDER_ON_SAVE = False
@@ -155,8 +158,20 @@ def test_real_view_starts_captures_and_finalizes_sidecars(qapp, tmp_path, monkey
             qapp.processEvents()
         model.update_ibis_buffer(999.0234375)
         model.update_ibis_buffer(1000.9765625)
+        view.pause_recording_button.click()
+        assert view._is_session_paused()
+        assert view.pause_recording_button.text() == "Resume"
+        assert view.stop_save_button.isEnabled()
+        assert not view.start_recording_button.isEnabled()
+        qapp.processEvents()
+        model.update_ibis_buffer(1500)
+        qapp.processEvents()
+        view.pause_recording_button.click()
+        assert not view._is_session_paused()
+        qapp.processEvents()
+        model.update_ibis_buffer(950)
         directory = view._session_bundle.session_dir
-        assert view.meditation_panel.recording.index == 2
+        assert view.meditation_panel.recording.index == 4
         view.finalize_session(show_message=False, build_final_report=False)
         assert (directory / "rr_intervals.csv").exists()
         assert (directory / "meditation_analysis.json").exists()
@@ -175,4 +190,4 @@ def test_real_view_starts_captures_and_finalizes_sidecars(qapp, tmp_path, monkey
         model._qtc_executor.shutdown(wait=False, cancel_futures=True)
     with (directory / "session.csv").open(newline="") as handle:
         rows = [row for row in csv.DictReader(handle) if row["event"] == "IBI"]
-    assert [float(row["value"]) for row in rows] == [999.0234375, 1000.9765625]
+    assert [float(row["value"]) for row in rows] == [999.0234375, 1000.9765625, 950]

@@ -25,6 +25,29 @@ does not contain this workflow.
 You can always stop early using **Stop & Save**. The recording is retained;
 missing or short phases do not acquire invented comparison values.
 
+To prepare a protocol before recording, open **Meditation…**, choose its settings
+and **Use with Start New**. **Start New** then starts both the recording and the
+baseline cue immediately. After a saved session, **Prepare next session** opens
+this setup without changing the previous diary. A normal recording without a
+prepared plan announces “Запись началась”; **Begin baseline** remains available
+to start its protocol after settling in.
+
+**Pause / Resume**, next to **Stop & Save**, works for ordinary recordings and
+meditation protocols. It freezes the phase timer and disables manual transitions;
+automatic transitions wait until you resume. Saving while paused is supported.
+The sensor stays connected and live preview continues. Original RR keep their
+wall-clock receipt times even during a break, with explicit `pauses` in
+`meditation.json`; the event CSV omits live metrics during the break and records
+`SessionPause` / `SessionResume`. Meditation analysis and HRV Review exclude pause
+ranges. Each uninterrupted section starts new fixed windows; two short sections
+are never stitched into a five-minute measurement. Paused sessions remain
+reviewable but are excluded from comparisons with uninterrupted practices.
+
+**Проверить звук** is also available beside the phase timer. Audio failures and
+player exit codes are retained in `session-audio.log` in the application data
+folder. A successful player exit cannot confirm that your chosen speakers or
+headphones were audible; check the macOS output and volume if playback is silent.
+
 Practice, posture and breathing mode are used for grouping. Paced breathing also
 needs its rate. Unrecorded conditions and “Other” posture/breathing do not enter
 a comparison group. Optional diary fields include sleep, caffeine and its timing,

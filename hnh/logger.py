@@ -15,6 +15,7 @@ class Logger(QObject):
         self.writer = None
         self.current_path: str | None = None
         self._recording_started_perf: float | None = None
+        self.paused = False
 
     @Slot(str)
     def start_recording(self, file_path: str):
@@ -29,6 +30,7 @@ class Logger(QObject):
             self.status_update.emit(f"Failed to start recording: {exc}")
             return
         self.current_path = file_path
+        self.paused = False
         self._recording_started_perf = time.perf_counter()
         self.writer = csv.writer(self.file)
         self.writer.writerow(["event", "value", "timestamp", "elapsed_ms"])
@@ -59,6 +61,14 @@ class Logger(QObject):
             return 0.0
         return max(0.0, (time.perf_counter() - started) * 1000.0)
 
+    @Slot(bool)
+    def set_paused(self, paused: bool):
+        if not self.file or paused == self.paused:
+            return
+        self.paused = False
+        self.write_to_file(NamedSignal("SessionPause" if paused else "SessionResume", 1))
+        self.paused = paused
+
     @Slot(object)
     def write_rr_sample(self, sample: dict):
         # Unlike a mutable model deque, this payload cannot advance to the next
@@ -69,7 +79,7 @@ class Logger(QObject):
 
     @Slot(object)
     def write_to_file(self, data: NamedSignal):
-        if not self.file:
+        if not self.file or self.paused:
             return
         key, val = data
         timestamp = datetime.now().isoformat()

@@ -69,6 +69,47 @@ def test_exact_metrics_for_known_alternating_intervals():
     assert result["adjacent_pairs"] == 299
 
 
+def test_pause_preserves_wall_time_raw_data_and_restarts_windows(tmp_path):
+    clock = Clock()
+    rec = RRRecording(tmp_path, "paused", clock=clock)
+    rec.begin_protocol(5, True, {})
+    for second in range(960):
+        clock.value = 1000 + second
+        if second in (150, 210):
+            rec.set_paused(second == 150)
+        rec.tick()
+        clock.value += 0.5
+        rec.add_sample(sample(900 if second % 2 else 1100, received_perf=clock()))
+    clock.value = 1960
+    assert rec.tick()
+    result = rec.finish()
+    assert rec.metadata["pauses"] == [{"start_sec": 150, "end_sec": 210}]
+    assert rec.metadata["active_duration_seconds"] == 900
+    assert [p["end_sec"] for p in rec.metadata["phases"]] == [360, 660, 960]
+    assert [(w["start_sec"], w["end_sec"]) for w in result["windows"]] == [
+        (0, 150), (210, 360), (360, 660), (660, 960)]
+    assert result["phases"]["before"]["rmssd_ms"] is None
+    assert result["phases"]["practice"]["rmssd_ms"] == 200
+    assert not result["comparable"]
+    rows = list(csv.DictReader((tmp_path / "rr_intervals.csv").open()))
+    assert len(rows) == 960  # Even paused RR remain available for audit.
+    assert float(rows[210]["elapsed_sec"]) == 210.5
+    assert rows[149]["segment_id"] != rows[210]["segment_id"]
+
+
+def test_stop_while_paused_without_a_protocol(tmp_path):
+    clock = Clock()
+    rec = RRRecording(tmp_path, "ordinary", clock=clock)
+    clock.value += 12
+    rec.set_paused(True)
+    clock.value += 120
+    assert not rec.tick()
+    rec.finish()
+    assert rec.metadata["pauses"][-1]["end_sec"] == 132
+    assert rec.metadata["active_duration_seconds"] == 12
+    assert not rec.active
+
+
 def test_zero_variability_is_not_negative_infinity():
     rows = alternating_rows()
     for row in rows:
