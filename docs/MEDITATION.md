@@ -27,7 +27,9 @@ missing or short phases do not acquire invented comparison values.
 
 To prepare a protocol before recording, open **Meditation…**, choose its settings
 and **Use with Start New**. **Start New** then starts both the recording and the
-baseline cue immediately. After a saved session, **Prepare next session** opens
+baseline cue immediately. Closing this setup without **Use with Start New**
+leaves no automatic plan armed, including when cancelling edits to an earlier
+prepared plan. After a saved session, **Prepare next session** opens
 this setup without changing the previous diary. A normal recording without a
 prepared plan announces “Запись началась”; **Begin baseline** remains available
 to start its protocol after settling in.

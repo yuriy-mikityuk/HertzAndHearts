@@ -10065,6 +10065,13 @@ class View(QMainWindow):
         """Store average session values for trends. Call at end of session (finalize or abandon)."""
         if self._session_bundle is None or self._session_profile_id is None:
             return
+        panel = getattr(self, "meditation_panel", None)
+        record = panel.recording if panel is not None else None
+        if (record is not None and record.directory == self._session_bundle.session_dir
+                and record.metadata.get("pauses")):
+            # Applies to ordinary recordings as well as meditation protocols,
+            # including save/abandon while paused and fully resumed recordings.
+            return
         data = self._build_report_data(report_stage="draft")
         hr_vals = [float(v) for v in (data.get("hr_values") or []) if v is not None]
         rmssd_vals = [float(v) for v in (data.get("rmssd_values") or []) if v is not None]

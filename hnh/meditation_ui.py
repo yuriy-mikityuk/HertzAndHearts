@@ -474,8 +474,12 @@ class MeditationPanel(QWidget):
         dialog.exec()
         if not has_protocol and (not record or not record.metadata.get("protocol")):
             self.draft = form.values()
-            self.draft_plan = {name: field.value() for name, field in durations.items()}
-            self.draft_plan.update(audio_mode=audio_mode.currentData(), automatic=automatic.isChecked())
+            # Closing a form preserves diary text, not permission to start an
+            # automatic protocol on the next (possibly sensor-triggered) start.
+            self.draft_plan = None
+            if record is None and dialog.result() == QDialog.Accepted:
+                self.draft_plan = {name: field.value() for name, field in durations.items()}
+                self.draft_plan.update(audio_mode=audio_mode.currentData(), automatic=automatic.isChecked())
 
     def open_history(self):
         # Keep the dialog alive across opens. A nested exec() loop and transient
