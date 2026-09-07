@@ -2,8 +2,8 @@ from types import SimpleNamespace
 import csv
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QItemSelectionModel, QObject, Signal
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import QCoreApplication, QEvent, QItemSelectionModel, QObject, Signal, QTimer
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton
 from PySide6.QtTest import QTest
 
 from hnh.meditation_ui import DiaryForm, MeditationHistory, MeditationPanel
@@ -30,6 +30,7 @@ class Host(QWidget):
         self.statuses = []
         self.finalizations = 0
         self.panel = MeditationPanel(self)
+        self.panel.audio.play = lambda *args: None
 
     def show_status(self, text):
         self.statuses.append(text)
@@ -135,16 +136,78 @@ def test_new_profile_cannot_edit_previous_profiles_diary(qapp, tmp_path):
     host.close()
 
 
+@pytest.mark.parametrize("context,accept", [
+    ("idle", False), ("ordinary", False), ("prepare_next", False),
+    ("idle", True), ("prepare_next", True),
+])
+def test_only_explicit_use_arms_next_recording(qapp, tmp_path, context, accept):
+    host = Host()
+    if context != "idle":
+        host.panel.begin(create_session_bundle(tmp_path / "previous"))
+        if context == "prepare_next":
+            host.panel.finish("finalized")
+    # Rejecting an edit must also disarm a previously prepared plan.
+    host.panel.draft_plan = dict(before=5, practice=16, after=5,
+                                 automatic=True, audio_mode="voice")
+    chosen = []
+    def close_form():
+        dialog = QApplication.activeModalWidget()
+        if accept:
+            button = next((b for b in dialog.findChildren(QPushButton)
+                           if b.text() == "Use with Start New"), None)
+            if button is not None:
+                chosen.append(button.text())
+                button.click()
+                return
+        dialog.reject()
+    QTimer.singleShot(0, close_form)
+    host.panel.open_diary(prepare=context == "prepare_next")
+    assert bool(chosen) == accept
+    assert bool(host.panel.draft_plan) == accept
+    if host.panel.recording and host.panel.recording.active:
+        host.panel.finish("finalized")
+    events = []
+    host.panel.audio.play = lambda *args: events.append(args)
+    host.panel.begin(create_session_bundle(tmp_path / "next"))
+    assert bool(host.panel.recording.metadata["protocol"]) == accept
+    assert events[0][0] == ("before" if accept else "started")
+    host.panel.finish("finalized")
+    host.close()
+
+
+@pytest.mark.parametrize("pauses", [[], [{"start_sec": 0, "end_sec": None}],
+                                  [{"start_sec": 10, "end_sec": 20}]])
+def test_ordinary_trend_skips_any_recorded_pause(tmp_path, pauses):
+    from hnh.view import View
+    inserted, built = [], []
+    def report(**kwargs):
+        built.append(True)
+        # Exercise the live-value fallback when no retained samples exist.
+        return {"last_hr": 70, "last_rmssd": 30}
+    host = SimpleNamespace(
+        _session_bundle=SimpleNamespace(session_dir=tmp_path, session_id="test"),
+        _session_profile_id="Admin",
+        meditation_panel=SimpleNamespace(recording=SimpleNamespace(
+            directory=tmp_path, metadata={"protocol": None, "pauses": pauses})),
+        _build_report_data=report, baseline_hr=None, baseline_rmssd=None,
+        _profile_store=SimpleNamespace(record_session_trend=lambda **kw: inserted.append(kw)),
+    )
+    View._record_session_trend_from_current_state(host)
+    assert bool(built) == bool(inserted) == (not pauses)
+
+
 def test_real_view_starts_captures_and_finalizes_sidecars(qapp, tmp_path, monkeypatch):
     from hnh import settings
     from hnh.model import Model
     from hnh.view import View
+    from hnh.session_audio import SessionAudio
 
     monkeypatch.setenv("HNH_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(View, "_run_startup_flow", lambda self: None)
     monkeypatch.setattr(View, "_schedule_background_update_check", lambda self: None)
     monkeypatch.setattr(View, "_show_maximized_fit", lambda self: None)
+    monkeypatch.setattr(SessionAudio, "play", lambda *args: None)
     model = Model()
     view = View(model)
     view.settings.OPEN_SESSION_FOLDER_ON_SAVE = False
@@ -155,12 +218,25 @@ def test_real_view_starts_captures_and_finalizes_sidecars(qapp, tmp_path, monkey
             qapp.processEvents()
         model.update_ibis_buffer(999.0234375)
         model.update_ibis_buffer(1000.9765625)
+        view.pause_recording_button.click()
+        assert view._is_session_paused()
+        assert view.pause_recording_button.text() == "Resume"
+        assert view.stop_save_button.isEnabled()
+        assert not view.start_recording_button.isEnabled()
+        qapp.processEvents()
+        model.update_ibis_buffer(1500)
+        qapp.processEvents()
+        view.pause_recording_button.click()
+        assert not view._is_session_paused()
+        qapp.processEvents()
+        model.update_ibis_buffer(950)
         directory = view._session_bundle.session_dir
-        assert view.meditation_panel.recording.index == 2
+        assert view.meditation_panel.recording.index == 4
         view.finalize_session(show_message=False, build_final_report=False)
         assert (directory / "rr_intervals.csv").exists()
         assert (directory / "meditation_analysis.json").exists()
         assert not view.meditation_panel.recording.active
+        assert not view._profile_store.list_session_trends(profile_name=view._session_profile_id)
     finally:
         # Let the view's existing delayed startup callbacks expire while their
         # Python receivers are still alive (including the 3.5s update timer).
@@ -175,4 +251,4 @@ def test_real_view_starts_captures_and_finalizes_sidecars(qapp, tmp_path, monkey
         model._qtc_executor.shutdown(wait=False, cancel_futures=True)
     with (directory / "session.csv").open(newline="") as handle:
         rows = [row for row in csv.DictReader(handle) if row["event"] == "IBI"]
-    assert [float(row["value"]) for row in rows] == [999.0234375, 1000.9765625]
+    assert [float(row["value"]) for row in rows] == [999.0234375, 1000.9765625, 950]

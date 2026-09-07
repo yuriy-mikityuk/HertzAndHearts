@@ -16,9 +16,10 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from hnh.session_timing import active_duration, active_ranges, pause_ranges
 
 WINDOW_SECONDS = 300.0
-ANALYSIS_VERSION = "meditation-1"
+ANALYSIS_VERSION = "meditation-2"
 PHASES = ("before", "practice", "after")
 METRICS = ("rmssd_ms", "ln_rmssd", "sdnn_ms", "mean_hr_bpm")
 RR_FIELDS = (
@@ -75,6 +76,7 @@ class RRRecording:
             "timing": "monotonic receipt time; elapsed_sec is seconds",
             "protocol": None,
             "phases": [],
+            "pauses": [],
             "diary": {},
             "protocol_completed": False,
         }
@@ -93,6 +95,27 @@ class RRRecording:
     def phase(self) -> dict | None:
         phases = self.metadata["phases"]
         return phases[-1] if phases and phases[-1]["end_sec"] is None else None
+
+    @property
+    def paused(self):
+        pauses = self.metadata["pauses"]
+        return bool(pauses and pauses[-1]["end_sec"] is None)
+
+    def active_seconds(self, start=0.0):
+        end = self.elapsed
+        return active_duration(start, end, pause_ranges(self.metadata, end))
+
+    def set_paused(self, paused):
+        if not self.active or self.paused == paused:
+            return
+        if paused:
+            self.metadata["pauses"].append({"start_sec": self.elapsed, "end_sec": None})
+        else:
+            self.metadata["pauses"][-1]["end_sec"] = self.elapsed
+        # Raw capture continues for audit/reprocessing. Analysis explicitly
+        # excludes pause ranges; segment boundaries also protect RR adjacency.
+        self.mark_gap()
+        self.persist()
 
     def persist(self):
         write_json(self.directory / "meditation.json", self.metadata)
@@ -131,7 +154,7 @@ class RRRecording:
 
     def begin_protocol(self, practice_minutes: int, automatic: bool, diary: dict, *,
                        before_minutes=5, after_minutes=5, audio_mode="off", template=None):
-        if not self.active or self.metadata["protocol"] is not None:
+        if not self.active or self.paused or self.metadata["protocol"] is not None:
             raise ValueError("A protocol can only begin once in an active recording.")
         if any(type(value) is not int or not 1 <= value <= 120
                for value in (before_minutes, practice_minutes, after_minutes)):
@@ -157,7 +180,7 @@ class RRRecording:
     def advance(self, *, at: float | None = None) -> bool:
         """Close a phase. Return True when the after phase has ended."""
         phase = self.phase
-        if not self.active or phase is None:
+        if not self.active or self.paused or phase is None:
             return False
         end = self.elapsed if at is None else float(at)
         end = max(phase["start_sec"], min(end, self.elapsed))
@@ -175,11 +198,16 @@ class RRRecording:
 
     def tick(self) -> bool:
         protocol = self.metadata["protocol"]
-        if not self.active or not protocol or not protocol["automatic"]:
+        if not self.active or self.paused or not protocol or not protocol["automatic"]:
             return False
         while self.phase is not None:
             phase = self.phase
             deadline = phase["start_sec"] + protocol[phase["name"] + "_seconds"]
+            # Completed pauses shift this phase's deadline on the original
+            # receipt-time axis. No artificial compressed beat timestamps.
+            for start, end in pause_ranges(self.metadata, self.elapsed):
+                if phase["start_sec"] <= start < deadline:
+                    deadline += end - start
             if self.elapsed < deadline:
                 break
             if self.advance(at=deadline):
@@ -189,6 +217,8 @@ class RRRecording:
     def finish(self, state="finalized"):
         if not self.active:
             return
+        if self.paused:
+            self.metadata["pauses"][-1]["end_sec"] = self.elapsed
         if self.phase is not None:
             self.phase["end_sec"] = self.elapsed
         self.active = False
@@ -196,6 +226,7 @@ class RRRecording:
         self.metadata.update({
             "state": state, "ended_at": datetime.now().astimezone().isoformat(),
             "duration_seconds": self.elapsed, "rr_samples": self.index,
+            "active_duration_seconds": self.active_seconds(),
         })
         self.persist()
         return analyze_session(self.directory)
@@ -299,6 +330,7 @@ def analyze_session(directory: Path) -> dict:
     rows = _read_rr(rr_path)
     windows = []
     summaries = {}
+    pauses = pause_ranges(metadata, float(metadata["duration_seconds"]))
     previous_end = 0.0
     names = [phase["name"] for phase in metadata["phases"]]
     if names != list(PHASES[:len(names)]):
@@ -308,18 +340,20 @@ def analyze_session(directory: Path) -> dict:
         if start is None or end is None or start < previous_end or end < start:
             raise ValueError("Invalid or unfinished meditation phase.")
         previous_end = end
-        cursor = start
         phase_windows = []
-        while cursor < end - 1e-6:
-            stop = min(cursor + WINDOW_SECONDS, end)
-            item = window_metrics(rows, cursor, stop)
-            item["phase"] = phase["name"]
-            phase_windows.append(item)
-            windows.append(item)
-            cursor = stop
+        for left, right in active_ranges(start, end, pauses):
+            cursor = left
+            while cursor < right - 1e-6:
+                stop = min(cursor + WINDOW_SECONDS, right)
+                item = window_metrics(rows, cursor, stop)
+                item["phase"] = phase["name"]
+                phase_windows.append(item)
+                windows.append(item)
+                cursor = stop
         accepted = [item for item in phase_windows if item["usable"]]
         summaries[phase["name"]] = {
-            "duration_seconds": end - start,
+            "duration_seconds": active_duration(start, end, pauses),
+            "wall_duration_seconds": end - start,
             "usable_windows": len(accepted),
             "total_windows": len(phase_windows),
             **{
@@ -350,6 +384,7 @@ def analyze_session(directory: Path) -> dict:
         "windows": windows, "phases": summaries, "after_minus_before": delta,
         "comparable": (
             metadata.get("state") == "finalized"
+            and not pauses
             and metadata.get("protocol_completed", False)
             and all(summaries.get(phase, {}).get("usable_windows", 0) > 0 for phase in PHASES)
             and all(item["usable"] for item in windows
@@ -471,6 +506,10 @@ def recover_interrupted_recording(directory: Path) -> None:
         return
     rows = _read_rr(directory / "rr_intervals.csv")
     last_time = rows[-1]["time"] if rows else 0.0
+    for pause in metadata.get("pauses", []):
+        last_time = max(last_time, pause["start_sec"], pause.get("end_sec") or 0)
+        if pause.get("end_sec") is None:
+            pause["end_sec"] = last_time
     for phase in metadata.get("phases", []):
         if phase.get("end_sec") is None:
             phase["end_sec"] = max(phase["start_sec"], last_time)

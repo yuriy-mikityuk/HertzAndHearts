@@ -173,10 +173,18 @@ class MeditationPanel(QWidget):
         self.next_button.clicked.connect(self.next_phase)
         self.history_button = QPushButton("Meditation history")
         self.history_button.clicked.connect(self.open_history)
+        self.sound_button = QPushButton("Проверить звук")
+        self.sound_button.clicked.connect(self.test_audio)
+        self.audio_status = QLabel()
+        self.audio_status.setWordWrap(True)
+        self.audio_status.setMaximumWidth(210)
+        self.audio.status = self.show_audio_status
         row.addWidget(self.diary_button)
         row.addWidget(self.phase_label, 1)
         row.addWidget(self.next_button)
+        row.addWidget(self.sound_button)
         row.addWidget(self.history_button)
+        row.addWidget(self.audio_status)
         host.model.rr_sample.connect(self.capture_sample)
         self.timer = QTimer(self)
         self.timer.setInterval(500)
@@ -184,16 +192,29 @@ class MeditationPanel(QWidget):
         self.timer.start()
 
     def begin(self, bundle):
+        if self._draft_profile != self.host._session_profile_id:
+            self.draft, self.draft_plan, self.draft_template = {}, None, None
+            self._draft_profile = self.host._session_profile_id
         self._capture_error = None
         self.audio.stop()
         self._audio_token = None
         try:
             self.recording = RRRecording(bundle.session_dir, bundle.session_id)
             self.recording.metadata["profile_id"] = self.host._session_profile_id
+            self.recording.metadata["audio_mode"] = (self.draft_plan or {}).get("audio_mode", "voice")
             self.recording.persist()
+            if self._draft_profile == self.host._session_profile_id and self.draft_plan:
+                plan = self.draft_plan
+                self.recording.begin_protocol(plan["practice"], plan["automatic"], self.draft,
+                    before_minutes=plan["before"], after_minutes=plan["after"],
+                    audio_mode=plan["audio_mode"], template=self.draft_template)
+                self.draft = {}
+                self.draft_plan = None
+            else:
+                self._announce(self.recording, "started")
             self.refresh()
             return True
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self._capture_error = str(exc)
             if self.recording is not None and self.recording.active:
                 self.recording.file.close()
@@ -222,7 +243,7 @@ class MeditationPanel(QWidget):
         if self.recording is not None and self.recording.active:
             try:
                 self.recording.finish("capture_error" if self._capture_error else state)
-                if not self._capture_error and self.recording.metadata.get("protocol"):
+                if not self._capture_error:
                     self._announce(self.recording, "completed" if self.recording.metadata.get("protocol_completed") else "stopped")
             except (OSError, ValueError) as exc:
                 self._capture_error = str(exc)
@@ -233,7 +254,24 @@ class MeditationPanel(QWidget):
         token = (id(record), event)
         if token != self._audio_token:
             self._audio_token = token
-            self.audio.play(event, (record.metadata.get("protocol") or {}).get("audio_mode", "off"))
+            self.audio.play(event, (record.metadata.get("protocol") or {}).get(
+                "audio_mode", record.metadata.get("audio_mode", "voice")))
+
+    def show_audio_status(self, message):
+        self.audio_status.setText("Аудио: ошибка / резервный сигнал" if any(word in message.lower()
+            for word in ("ошиб", "недоступен", "не удалось", "не ответил")) else
+            ("Аудио: выключено" if "без звука" in message or "выключен" in message else "Аудио: уведомление завершено"))
+        self.audio_status.setToolTip(message)
+        self.host.show_status(message)
+
+    def test_audio(self):
+        record = self.recording
+        mode = ((record.metadata.get("protocol") or {}).get("audio_mode", record.metadata.get("audio_mode", "voice"))
+                if record else (self.draft_plan or {}).get("audio_mode", "voice"))
+        if mode == "off":
+            self.show_audio_status("Звук выключен. Выберите голос или сигналы в Meditation…")
+        else:
+            self.audio.play("test", mode)
 
     def refresh(self):
         record = self.recording
@@ -250,30 +288,36 @@ class MeditationPanel(QWidget):
             if done:
                 self.host.finalize_session(show_message=False, build_final_report=False)
                 return
-            if same_profile and phase:
+            if same_profile and phase and not record.paused:
+                # Resume has its own cue. Do not immediately cancel it by
+                # replaying the announcement of the same phase.
+                if self._audio_token == (id(record), "resumed"):
+                    self._audio_token = (id(record), phase["name"])
                 self._announce(record, phase["name"])
         active = bool(same_profile and record.active)
-        self.next_button.setEnabled(active and phase is not None)
+        self.next_button.setEnabled(active and phase is not None and not record.paused)
         self.history_button.setEnabled(not active)
         if self._capture_error:
             self.phase_label.setText(f"Recording/analysis error: {self._capture_error}")
         elif active and phase:
-            elapsed = max(0, int(record.elapsed - phase["start_sec"]))
+            elapsed = max(0, int(record.active_seconds(phase["start_sec"])))
             target = int(record.metadata["protocol"][phase["name"] + "_seconds"])
             self.phase_label.setText(
-                f"{PHASE_LABELS[phase['name']]} · {elapsed // 60:02d}:{elapsed % 60:02d}"
+                ("PAUSED · " if record.paused else "")
+                + f"{PHASE_LABELS[phase['name']]} · {elapsed // 60:02d}:{elapsed % 60:02d}"
                 f" / {target // 60:02d}:{target % 60:02d}"
             )
             self.next_button.setText("Finish & save" if phase["name"] == "after" else "Next phase")
         elif active:
-            self.phase_label.setText("RR recording active. Settle comfortably, then begin baseline.")
+            self.phase_label.setText("PAUSED · press Resume to continue." if record.paused else
+                                    "RR recording active. Settle comfortably, then begin baseline.")
         elif same_profile and record.metadata.get("protocol"):
             self.phase_label.setText("Saved. Add after-session ratings in Meditation…")
         else:
             self.phase_label.setText("Connect and start a recording to begin a meditation protocol.")
 
     def next_phase(self):
-        if not self.recording or not self.recording.active:
+        if not self.recording or not self.recording.active or self.recording.paused:
             return
         try:
             done = self.recording.advance()
@@ -285,14 +329,14 @@ class MeditationPanel(QWidget):
             self.host.finalize_session(show_message=False, build_final_report=False)
         self.refresh()
 
-    def open_diary(self):
+    def open_diary(self, *, prepare=False):
         if self._draft_profile != self.host._session_profile_id:
             self.draft = {}
             self.cues = False
             self.draft_template = None
             self.draft_plan = None
             self._draft_profile = self.host._session_profile_id
-        record = self.recording
+        record = None if prepare else self.recording
         if record and record.metadata.get("profile_id") != self.host._session_profile_id:
             record = None
         has_protocol = bool(record and record.metadata.get("protocol"))
@@ -389,10 +433,16 @@ class MeditationPanel(QWidget):
             apply_template()
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         action = buttons.addButton(
-            "Save diary" if has_protocol else "Begin baseline",
+            "Save diary" if has_protocol else ("Begin baseline" if record else "Use with Start New"),
             QDialogButtonBox.ActionRole,
         )
-        action.setEnabled(has_protocol or bool(record and record.active))
+        action.setEnabled(record is None or has_protocol or bool(record.active and not record.paused))
+        if record and not record.active:
+            prepare_button = buttons.addButton("Prepare next session", QDialogButtonBox.ActionRole)
+            def prepare_next():
+                dialog.reject()
+                QTimer.singleShot(0, lambda: self.open_diary(prepare=True))
+            prepare_button.clicked.connect(prepare_next)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
@@ -408,7 +458,7 @@ class MeditationPanel(QWidget):
                     record.persist()
                     if not record.active:
                         analyze_session(record.directory)
-                else:
+                elif record is not None:
                     record.begin_protocol(durations["practice"].value(), automatic.isChecked(), values,
                         before_minutes=durations["before"].value(), after_minutes=durations["after"].value(),
                         audio_mode=audio_mode.currentData(), template=self.draft_template)
@@ -420,12 +470,16 @@ class MeditationPanel(QWidget):
                 QMessageBox.warning(dialog, "Could not save", str(exc))
         action.clicked.connect(apply)
         if not record:
-            layout.addWidget(QLabel("Connect the sensor and start a recording before beginning baseline."))
+            layout.addWidget(QLabel("Start New will start the prepared baseline and its notifications."))
         dialog.exec()
         if not has_protocol and (not record or not record.metadata.get("protocol")):
             self.draft = form.values()
-            self.draft_plan = {name: field.value() for name, field in durations.items()}
-            self.draft_plan.update(audio_mode=audio_mode.currentData(), automatic=automatic.isChecked())
+            # Closing a form preserves diary text, not permission to start an
+            # automatic protocol on the next (possibly sensor-triggered) start.
+            self.draft_plan = None
+            if record is None and dialog.result() == QDialog.Accepted:
+                self.draft_plan = {name: field.value() for name, field in durations.items()}
+                self.draft_plan.update(audio_mode=audio_mode.currentData(), automatic=automatic.isChecked())
 
     def open_history(self):
         # Keep the dialog alive across opens. A nested exec() loop and transient
@@ -630,6 +684,8 @@ class MeditationHistory(QDialog):
             lines.append("Protocol stopped early; missing/short phases have no comparable value.")
         if record.get("stale"):
             lines.append("Analysis is out of date. Recalculate before using this session in trends.")
+        elif metadata.get("pauses"):
+            lines.append("Paused session: breaks excluded; not pooled with uninterrupted practices.")
         elif not analysis.get("comparable"):
             lines.append("Excluded from trends: incomplete protocol or an unusable full window.")
         for window in analysis.get("windows", []):

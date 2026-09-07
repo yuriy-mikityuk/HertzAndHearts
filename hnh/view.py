@@ -6426,6 +6426,7 @@ class ViewSignals(QObject):
     annotation = Signal(tuple)
     start_recording = Signal(str)
     save_recording = Signal()
+    pause_recording = Signal(bool)
     request_buffer_reset = Signal()
 
 
@@ -6642,6 +6643,7 @@ class View(QMainWindow):
         self.logger_thread.finished.connect(self.logger.save_recording)
         self.signals.start_recording.connect(self.logger.start_recording)
         self.signals.save_recording.connect(self.logger.save_recording)
+        self.signals.pause_recording.connect(self.logger.set_paused)
         self.signals.annotation.connect(self.logger.write_to_file)
         self.logger.recording_status.connect(self.show_recording_status)
         self.logger.status_update.connect(self.show_status)
@@ -6899,6 +6901,12 @@ class View(QMainWindow):
         self.start_recording_button.clicked.connect(self.start_session)
         self.stop_save_button = QPushButton("Stop && Save")
         self.stop_save_button.clicked.connect(self._stop_and_save)
+        self.pause_recording_button = QPushButton("Pause")
+        self.pause_recording_button.setToolTip(
+            "Pause the session and phase timer. Sensor preview and raw archival capture continue; "
+            "the marked break is excluded from meditation analysis."
+        )
+        self.pause_recording_button.clicked.connect(self._toggle_session_pause)
         self.logout_button = QPushButton("Switch User")
         self.logout_button.setToolTip("Switch user profile (same popup as startup).")
         self.logout_button.clicked.connect(self._on_logout_clicked)
@@ -7252,6 +7260,7 @@ class View(QMainWindow):
         toolbar_top.addWidget(self.battery_label)
         toolbar_top.addWidget(self.start_recording_button)
         toolbar_top.addWidget(self.stop_save_button)
+        toolbar_top.addWidget(self.pause_recording_button)
         self._morning_baseline_cb = QCheckBox("Morning baseline")
         self._morning_baseline_cb.setToolTip(
             "When checked, a short protocol reminder appears while recording and the "
@@ -8230,11 +8239,45 @@ class View(QMainWindow):
         self._session_state = state
         self._update_session_actions()
 
+    def _is_session_paused(self):
+        panel = getattr(self, "meditation_panel", None)
+        record = panel.recording if panel is not None else None
+        return bool(record and record.active and record.paused)
+
+    def _toggle_session_pause(self):
+        panel = self.meditation_panel
+        if self._session_state != "recording" or not panel or not panel.recording:
+            return
+        # Resolve a deadline before pausing, including a completed final phase.
+        panel.refresh()
+        if not panel.recording.active:
+            return
+        try:
+            panel.recording.set_paused(not panel.recording.paused)
+        except OSError as exc:
+            panel._capture_error = str(exc)
+            self.finalize_session(show_message=False, build_final_report=False)
+            return
+        paused = panel.recording.paused
+        if not paused:
+            # Rolling live values must not carry beats from the break into
+            # the resumed portion. The baseline and sensor link stay intact.
+            self.model.clear_buffers()
+            self._rmssd_smooth_buf.clear()
+            self._sdnn_smooth_buf.clear()
+            self._hr_ewma = None
+        self.signals.pause_recording.emit(paused)
+        panel._announce(panel.recording, "paused" if paused else "resumed")
+        panel.refresh()
+        self._update_session_actions()
+        self._persist_manifest(state="recording", report_stage="draft")
+        self.show_status("Session paused; phase timer stopped." if paused else "Session resumed.")
+
     def _update_session_actions(self):
         connected = self._is_sensor_connected()
         connecting = self._connect_attempt_timer.isActive()
         is_recording = self._session_state == "recording"
-        annotation_available = is_recording
+        annotation_available = is_recording and not self._is_session_paused()
         elapsed = time.monotonic() - float(getattr(self, "_last_profile_switch_monotonic", 0.0))
         profile_switch_cooldown = elapsed < float(
             getattr(self, "_start_new_profile_switch_grace_seconds", 1.0)
@@ -8243,6 +8286,8 @@ class View(QMainWindow):
             connected and not is_recording and not profile_switch_cooldown
         )
         self.stop_save_button.setEnabled(is_recording)
+        self.pause_recording_button.setEnabled(is_recording)
+        self.pause_recording_button.setText("Resume" if self._is_session_paused() else "Pause")
         if getattr(self, "_morning_baseline_cb", None):
             self._morning_baseline_cb.setEnabled(True)
         self._import_action.setEnabled(not is_recording)
@@ -8594,6 +8639,7 @@ class View(QMainWindow):
                     "analysis": "meditation_analysis.json",
                     "windows": "meditation_windows.csv",
                     "protocol": record.metadata.get("protocol"),
+                    "pauses": record.metadata.get("pauses", []),
                     "capture_error": panel._capture_error,
                 }
         try:
@@ -10019,6 +10065,13 @@ class View(QMainWindow):
         """Store average session values for trends. Call at end of session (finalize or abandon)."""
         if self._session_bundle is None or self._session_profile_id is None:
             return
+        panel = getattr(self, "meditation_panel", None)
+        record = panel.recording if panel is not None else None
+        if (record is not None and record.directory == self._session_bundle.session_dir
+                and record.metadata.get("pauses")):
+            # Applies to ordinary recordings as well as meditation protocols,
+            # including save/abandon while paused and fully resumed recordings.
+            return
         data = self._build_report_data(report_stage="draft")
         hr_vals = [float(v) for v in (data.get("hr_values") or []) if v is not None]
         rmssd_vals = [float(v) for v in (data.get("rmssd_values") or []) if v is not None]
@@ -10898,15 +10951,17 @@ class View(QMainWindow):
             # Append only on the IBI tick (plot_ibis drain). The 125 ms timer still runs
             # this function for smoothing/axes/baseline, but must not draw ahead of HR.
             if plot_gate_open and allow_main_plot_append:
-                self._session_rmssd_values.append(smoothed_rmssd)
                 report_x = self._session_report_time_offset_seconds + x
-                self._session_rmssd_times.append(report_x)
+                if not self._is_session_paused():
+                    self._session_rmssd_values.append(smoothed_rmssd)
+                    self._session_rmssd_times.append(report_x)
                 if not self._main_plots_frozen:
                     self.hrv_widget.time_series.append(x, smoothed_rmssd)
                 if sdnn is not None and len(self._sdnn_smooth_buf) > 0:
                     smoothed_sdnn = sum(self._sdnn_smooth_buf) / len(self._sdnn_smooth_buf)
-                    self._session_hrv_values.append(smoothed_sdnn)
-                    self._session_hrv_times.append(report_x)
+                    if not self._is_session_paused():
+                        self._session_hrv_values.append(smoothed_sdnn)
+                        self._session_hrv_times.append(report_x)
                     if self._session_state == "recording":
                         self.signals.annotation.emit(NamedSignal("SDNN", float(smoothed_sdnn)))
                     self.sdnn_label.setText(f"SDNN: {sdnn:6.2f} ms")
@@ -11890,7 +11945,7 @@ class View(QMainWindow):
         elif data.name == "stress_ratio":
             val = data.value[0]
             self.stress_ratio_label.setText(f"LF/HF: {val:.2f}")
-            if self._session_state == "recording":
+            if self._session_state == "recording" and not self._is_session_paused():
                 if self.start_time is not None:
                     now = time.time()
                     elapsed = now - self.start_time
@@ -11912,7 +11967,7 @@ class View(QMainWindow):
                 except (TypeError, ValueError):
                     self.qrs_label.setText("QRS: -- ms")
                 snr_db = data.value.get("snr_db")
-                if snr_db is not None and self._session_state == "recording":
+                if snr_db is not None and self._session_state == "recording" and not self._is_session_paused():
                     try:
                         self._session_snr_values.append(float(snr_db))
                     except (TypeError, ValueError):
@@ -12011,9 +12066,10 @@ class View(QMainWindow):
 
             plot_elapsed = elapsed - self._plot_start_delay_seconds
             self._set_main_plot_started(True)
-            self._session_hr_values.append(self._hr_ewma)
             report_elapsed = self._session_report_time_offset_seconds + plot_elapsed
-            self._session_hr_times.append(report_elapsed)
+            if not self._is_session_paused():
+                self._session_hr_values.append(self._hr_ewma)
+                self._session_hr_times.append(report_elapsed)
             if not self._main_plots_frozen:
                 self.hr_trend_series.append(plot_elapsed, self._hr_ewma)
                 if self.hr_trend_series.count() % self._series_prune_stride == 0:
