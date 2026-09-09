@@ -206,7 +206,6 @@ def test_real_view_starts_captures_and_finalizes_sidecars(qapp, tmp_path, monkey
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(View, "_run_startup_flow", lambda self: None)
     monkeypatch.setattr(View, "_schedule_background_update_check", lambda self: None)
-    monkeypatch.setattr(View, "_show_maximized_fit", lambda self: None)
     monkeypatch.setattr(SessionAudio, "play", lambda *args: None)
     model = Model()
     view = View(model)
@@ -214,6 +213,19 @@ def test_real_view_starts_captures_and_finalizes_sidecars(qapp, tmp_path, monkey
     monkeypatch.setattr(view, "_is_sensor_connected", lambda: True)
     view.start_session(auto=True)
     try:
+        geometry_writes = []
+        original_set_geometry = view.setGeometry
+        def track_geometry(*args):
+            geometry_writes.append(args)
+            original_set_geometry(*args)
+        monkeypatch.setattr(view, "setGeometry", track_geometry)
+        view.show()
+        QTest.qWait(200)
+        assert view.isVisible() and not view.isMaximized()
+        view.hide()
+        view.show()
+        QTest.qWait(200)
+        assert not geometry_writes  # No delayed screen-fit or clamp callbacks.
         for _ in range(10):
             qapp.processEvents()
         model.update_ibis_buffer(999.0234375)
