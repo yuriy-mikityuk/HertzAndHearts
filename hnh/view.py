@@ -21,7 +21,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtCore import (
     Qt, QThread, Signal, Slot, QObject, QTimer, QMargins, QSize, QPointF, QEvent, QPoint,
-    QRect, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, QAbstractAnimation,
+    QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, QAbstractAnimation,
     QEventLoop, QUrl, QDate, QLocale,
 )
 from PySide6.QtBluetooth import QBluetoothAddress, QBluetoothDeviceInfo, QBluetoothLocalDevice
@@ -6440,8 +6440,6 @@ class _UpdateCheckThread(QThread):
 class View(QMainWindow):
     def __init__(self, model: Model):
         super().__init__()
-        self._maximized_once = False
-        self._cached_frame_inset: QMargins | None = None
 
         # 1. TRACKERS & STATE
         self.settings = Settings()
@@ -7679,7 +7677,6 @@ class View(QMainWindow):
 
     def _show_card0_dialog(self, profile_id: str) -> bool:
         dlg = Card0Dialog(self, allow_skip_for_profile=True)
-        dlg.showMaximized()
         if dlg.exec() != QDialog.Accepted:
             return False
         self._disclaimer_acknowledged_at = datetime.now().isoformat()
@@ -7717,7 +7714,8 @@ class View(QMainWindow):
 
     def _run_startup_flow(self):
         # Show main window first, then profile selection on top.
-        self._show_main_window_fullscreen()
+        # Let Qt and the window manager choose placement; do not force screen bounds.
+        self.show()
         selected_profile = self._prompt_for_session_profile(use_parent=True)
         if selected_profile is None:
             self.close()
@@ -7745,102 +7743,6 @@ class View(QMainWindow):
             else:
                 self._focus_scan_if_needed()
         QTimer.singleShot(0, _startup_focus)
-
-    def _show_maximized_fit(self):
-        """Size window to available screen (avoid showMaximized which can push window off-screen on Windows)."""
-        self._measure_and_apply_fit_geometry()
-
-    def _show_main_window_fullscreen(self):
-        """Show main window filling available screen (used after startup flow)."""
-        # On Windows, use true maximized state so the user sees the expected
-        # "maximized" window behavior (previously we used setGeometry only).
-        # We still keep the existing on-screen safety net in showEvent().
-        if platform.system() == "Windows":
-            self._maximized_once = True
-            self.showMaximized()
-            return
-        screen = self.screen()
-        if screen is None:
-            app = QApplication.instance()
-            screen = app.primaryScreen() if app is not None else None
-        if screen is not None:
-            avail = screen.availableGeometry()
-            inset = self._window_frame_inset()
-            geom = QRect(
-                avail.x() + inset.left(),
-                avail.y() + inset.top(),
-                avail.width() - inset.left() - inset.right(),
-                avail.height() - inset.top() - inset.bottom(),
-            )
-            self.setGeometry(geom)
-        self._maximized_once = True
-        self.show()
-        QTimer.singleShot(60, self._measure_and_apply_fit_geometry)
-        # Do NOT call showMaximized here: on Windows it overwrites our correct
-        # geometry and can push the window off-screen. Our setGeometry already
-        # fills the available screen.
-
-    def _window_frame_inset(self) -> QMargins:
-        """Window frame size; uses cached measurement when available."""
-        if self._cached_frame_inset is not None:
-            return self._cached_frame_inset
-        return QMargins(10, 40, 10, 10)
-
-    def _measure_and_apply_fit_geometry(self):
-        """Measure actual window frame and apply geometry that fits the screen."""
-        if not self.isVisible():
-            return
-        fg = self.frameGeometry()
-        g = self.geometry()
-        left = max(0, g.left() - fg.left())
-        top = max(0, g.top() - fg.top())
-        right = max(0, fg.right() - g.right())
-        bottom = max(0, fg.bottom() - g.bottom())
-        self._cached_frame_inset = QMargins(left, top, right, bottom)
-
-        screen = self.screen()
-        if screen is None:
-            app = QApplication.instance()
-            screen = app.primaryScreen() if app is not None else None
-        if screen is not None:
-            avail = screen.availableGeometry()
-            geom = QRect(
-                avail.x() + left,
-                avail.y() + top,
-                avail.width() - left - right,
-                avail.height() - top - bottom,
-            )
-            self.setGeometry(geom)
-
-    def _ensure_window_on_screen(self):
-        """Clamp window to visible screen area. Safety net for off-screen recovery."""
-        if not self.isVisible():
-            return
-        screen = self.screen()
-        if screen is None:
-            app = QApplication.instance()
-            screen = app.primaryScreen() if app is not None else None
-        if screen is None:
-            return
-        avail = screen.availableGeometry()
-        g = self.geometry()
-        # Early exit: already fully on screen
-        if avail.contains(g):
-            return
-        # Clamp to available bounds
-        new_x = max(avail.left(), min(g.x(), avail.right() - min(g.width(), avail.width())))
-        new_y = max(avail.top(), min(g.y(), avail.bottom() - min(g.height(), avail.height())))
-        new_w = min(g.width(), avail.width())
-        new_h = min(g.height(), avail.height())
-        self.setGeometry(QRect(new_x, new_y, new_w, new_h))
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        if not self._maximized_once:
-            self._maximized_once = True
-            QTimer.singleShot(0, self._show_maximized_fit)
-        # Safety net: ensure window stays on screen (handles monitor changes, etc.)
-        QTimer.singleShot(100, self._ensure_window_on_screen)
 
     def closeEvent(self, event):
         self._suppress_comm_error_popups = True
