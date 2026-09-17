@@ -310,7 +310,9 @@ class MeditationPanel(QWidget):
             self.next_button.setText("Finish & save" if phase["name"] == "after" else "Next phase")
         elif active:
             self.phase_label.setText("PAUSED · press Resume to continue." if record.paused else
-                                    "RR recording active. Settle comfortably, then begin baseline.")
+                                    "Запись RR идёт. Медитация ещё не начата: нажмите Meditation… → "
+                                    "выберите шаблон → Применить шаблон → Begin baseline. "
+                                    "Ожидание само по себе не запускает этапы.")
         elif same_profile and record.metadata.get("protocol"):
             self.phase_label.setText("Saved. Add after-session ratings in Meditation…")
         else:
